@@ -63,29 +63,92 @@ never save it, transfer, and the words are still there on the other machine.
 
 ---
 
-## Setup
+## Running it
 
-Both laptops need Windows and Python 3.10+.
-
-```bash
-pip install -r requirements.txt
-```
-
-On **laptop 2** (the one that does the work):
+Both laptops need Windows and Python 3.10+. Copy the project to both and run the
+same command on each:
 
 ```bash
-python run_agent.py --name "Workhorse"
+python run.py
 ```
 
-On **laptop 1** (the one you sit at):
+That is the whole setup. Everything else is managed from the window: whether
+this laptop receives applications, which target to send to, pairing, Tailscale,
+and the transfer itself. There is no separate agent command.
+
+On the **Connection** page, the laptop that should do the work presses
+**Start receiving**. The other one picks it from the target list and presses
+**Connect**. Then choose an app on the **Applications** page and press
+**Transfer**.
+
+Either machine can play either role, and both at once.
+
+Optional flags, mostly for putting a dedicated machine straight into service:
 
 ```bash
-python run_controller.py
+python run.py --receive --name Workhorse
 ```
 
-The agent announces itself over UDP broadcast and appears on the Connection page.
-If broadcast is filtered on your link, type the address in by hand — the agent
-prints its reachable addresses on startup.
+`run.bat` is a double-click wrapper for the same thing. For a laptop that should
+receive with no window at all, `run_agent.py` still runs the agent headless.
+
+<details>
+<summary>Notes</summary>
+
+Dependencies install themselves on first run, so a fresh laptop needs only
+Python and a copy of this folder.
+
+The Windows Store build of Python reports itself as `python3.13.exe` rather than
+`python.exe`, which matters if you go looking for the process. `run.bat` uses the
+`py` launcher to sidestep this.
+</details>
+
+---
+
+## Finding the other laptop
+
+Three ways, all shown in one list on the Connection page:
+
+| Source | How it is found | When it applies |
+|---|---|---|
+| **Local link** | UDP broadcast | A cable, or both on the same Wi-Fi |
+| **Tailscale** | `tailscale status --json` | Anywhere your tailnet reaches |
+| **Manual** | You type the address | Broadcast filtered, or anything else |
+
+Broadcast stops at the local link, so it will never find a laptop across a
+tailnet. Rather than invent a second discovery mechanism, AppMigrate asks the
+Tailscale CLI, which already knows every machine on your network. Tailscale peers
+are marked with the connection quality Tailscale reports:
+
+- **Direct** — a real peer-to-peer path. Fast enough for the video stream.
+- **Relayed** — routed through a DERP relay. The state transfer works fine; the
+  remote UI will usually lag.
+
+Peers are probed in the background to see whether AppMigrate is actually running
+over there, since being on the tailnet says nothing about that. A machine that
+cannot run the agent at all — an iPhone, an Android — is listed but not offered.
+
+Local entries win over Tailscale entries for the same machine, because a direct
+link is always the better path.
+
+---
+
+## Pairing
+
+An agent launches applications and receives keystrokes on request. That is far
+too much authority to grant anything that can open a socket, and over Tailscale
+every device on your tailnet can.
+
+So each laptop has a **pairing code**, shown on its Connection page under "This
+laptop". The first time another machine connects it must present that code; after
+that it is remembered. Rejected connections are closed immediately, before any
+other message is served.
+
+Connections from the same machine (loopback) are exempt, so testing on one laptop
+needs no ceremony.
+
+**New code** issues a fresh one and invalidates the old — use it if a code has
+been shared somewhere it should not have been.
 
 ---
 
@@ -109,9 +172,9 @@ comfortable.
 ### Checking your link
 
 ```bash
-python check_link.py          # list usable interfaces on this machine
-python check_link.py --watch  # watch for a cable being plugged in
-python check_link.py 169.254.1.5   # test reachability of the other laptop
+python check_link.py                # list usable interfaces on this machine
+python check_link.py --watch        # watch for a cable being plugged in
+python check_link.py 169.254.1.5    # test reachability of the other laptop
 ```
 
 A direct cable usually comes up with a **link-local** address (`169.254.x.x`) on
@@ -143,6 +206,7 @@ loop, costing a few percent CPU and tens of MB of RAM.
 ```
 appmig/
 ├── config.py            ports, timeouts, feature flags
+├── security.py          pairing codes and remembered peers
 ├── migrate.py           the prepare → close → capture → rollback sequence
 ├── bundle.py            zip-based state bundle, pack/unpack/checksum
 ├── protocol/
@@ -154,7 +218,8 @@ appmig/
 │   └── input.py         PostMessage / SendInput injection
 ├── discovery/
 │   ├── apps.py          the running-applications list
-│   └── peers.py         UDP beacon and peer presence
+│   ├── peers.py         UDP beacon and peer presence
+│   └── tailscale.py     tailnet peers and link quality
 ├── adapters/
 │   ├── base.py          the adapter contract
 │   ├── snss.py          Chromium session-file reader
@@ -165,8 +230,11 @@ appmig/
 │   └── generic.py       universal fallback
 ├── agent/
 │   ├── server.py        laptop 2: receive, restore, stream
+│   ├── embedded.py      run the agent inside the app, driven from the UI
 │   └── streamer.py      window capture and JPEG encode loop
-└── ui/                  PySide6 controller
+└── ui/
+    ├── targets.py       merges local + Tailscale + manual into one list
+    └── ...              PySide6 pages
 ```
 
 ---
@@ -232,6 +300,7 @@ over that machine's mouse and keyboard.
   binaries. `WindowStreamer._encode` is the single seam to replace for an
   NVENC/QuickSync path.
 - **Multiple concurrent sessions.** The agent restores and streams one at a time.
-- **Transport security.** The link is unauthenticated and unencrypted — it assumes
-  a direct cable or a trusted local network. Do not expose the agent port to an
-  untrusted network.
+- **Transport encryption.** Pairing gates who may connect, but the link itself is
+  not encrypted. Over Tailscale that does not matter: Tailscale already encrypts
+  everything end to end. Over a plain LAN it does — treat that as a trusted
+  network, or route it through Tailscale.

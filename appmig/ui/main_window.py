@@ -7,19 +7,20 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtWidgets import (
-    QButtonGroup, QHBoxLayout, QMessageBox, QPushButton, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QButtonGroup, QHBoxLayout, QInputDialog, QLineEdit, QMessageBox,
+    QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from .. import config, migrate
+from .. import config, migrate, security
 from ..adapters.registry import adapter_for
+from ..agent.embedded import EmbeddedAgent
 from ..discovery.apps import AppInfo
-from ..discovery.peers import PeerWatcher
 from . import theme
 from .apps_page import AppsPage
 from .connection_page import ConnectionPage
 from .link import AgentLink
 from .session_page import SessionPage
+from .targets import TargetRegistry
 from .widgets import StatusDot, label
 
 PAGE_APPS, PAGE_CONNECTION, PAGE_SESSION = 0, 1, 2
@@ -48,27 +49,40 @@ class CaptureWorker(QObject):
 
 
 class MainWindow(QWidget):
-    # PeerWatcher calls back from its own socket thread. Widgets may only be
-    # touched on the GUI thread, so the callback does nothing but emit this and
-    # let Qt queue the delivery.
-    peersChanged = Signal(list)
+    """One window for both roles: send from here, and optionally receive here.
+
+    TargetRegistry and EmbeddedAgent both emit from worker threads. Their
+    signals are connected to widget slots that live on the GUI thread, so Qt
+    queues the delivery for us -- no widget is ever touched off-thread.
+    """
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{config.APP_NAME} — Controller")
+        self.setWindowTitle(config.APP_NAME)
         self.resize(1180, 780)
 
         self.link = AgentLink(self)
         self.capture_worker = CaptureWorker(self)
         self.pending: Optional[migrate.CaptureResult] = None
+        self.last_target = ('', 0)
+        self.agent_name = None
         self.active_rollback: Optional[Path] = None
         self.active_session = ""
 
         self._build_ui()
         self._wire_signals()
 
-        self.peer_watcher = PeerWatcher(on_change=self._on_peers_changed)
-        self.peer_watcher.start()
+        self.registry = TargetRegistry(self)
+        self.registry.targetsChanged.connect(self.connection_page.set_targets)
+        self.registry.tailscaleState.connect(self.connection_page.set_tailscale_state)
+        self.registry.start()
+
+        self.agent = EmbeddedAgent(self)
+        self.agent.started.connect(self._on_agent_started)
+        self.agent.stopped.connect(self._on_agent_stopped)
+        self.agent.failed.connect(self._on_agent_failed)
+        self.agent.logMessage.connect(
+            lambda m: self.session_page.append_log(f'[agent] {m}'))
 
     # -- layout ---------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -125,11 +139,14 @@ class MainWindow(QWidget):
         self.stack.currentChanged.connect(
             lambda i: self.nav_group.button(i).setChecked(True))
 
-        self.peersChanged.connect(self.connection_page.set_peers)
         self.apps_page.transferRequested.connect(self._on_transfer_requested)
         self.connection_page.connectRequested.connect(self._on_connect_requested)
         self.connection_page.disconnectRequested.connect(
             lambda: self.link.disconnect_from("disconnected by user"))
+        self.connection_page.agentToggleRequested.connect(self._on_agent_toggle)
+        self.connection_page.rotateCodeRequested.connect(self._on_rotate_code)
+        self.connection_page.refreshTailscaleRequested.connect(
+            self._on_refresh_tailscale)
 
         self.session_page.inputEvent.connect(self._on_input_event)
         self.session_page.closeRemoteRequested.connect(self._on_close_remote)
@@ -142,19 +159,78 @@ class MainWindow(QWidget):
         self.link.restoreResult.connect(self._on_restore_result)
         self.link.frameReceived.connect(self._on_frame)
         self.link.sessionGone.connect(self._on_session_gone)
+        self.link.pairingRequired.connect(self._on_pairing_required)
 
         self.capture_worker.progress.connect(self.session_page.append_log)
         self.capture_worker.finished.connect(self._on_capture_finished)
         self.capture_worker.failed.connect(self._on_capture_failed)
 
     # -- connection -----------------------------------------------------------
-    def _on_peers_changed(self, peers) -> None:
-        """Called on the discovery thread. Hand off to the GUI thread."""
-        self.peersChanged.emit(list(peers))
-
-    def _on_connect_requested(self, host: str, port: int) -> None:
+    def _on_connect_requested(self, host: str, port: int, code: str = "") -> None:
+        self.last_target = (host, port)
+        # A target we have never paired with needs its code before we dial.
+        if not code and security.needs_code(host) and not security.recall_code(host):
+            code = self._ask_for_code(host)
+            if not code:
+                return
         self.connection_page.set_status(False, f"Connecting to {host}...")
-        self.link.connect_to(host, port)
+        self.link.connect_to(host, port, code or None)
+
+    def _ask_for_code(self, host: str) -> str:
+        code, accepted = QInputDialog.getText(
+            self, "Pairing code",
+            f"Enter the pairing code shown in the AppMigrate window on {host}.\n\n"
+            "It is on the Connection page there, under 'This laptop'.",
+            QLineEdit.Normal, "")
+        return security.normalise(code) if accepted else ""
+
+    def _on_pairing_required(self, host: str, port: int) -> None:
+        code = self._ask_for_code(host)
+        if code:
+            self.link.connect_to(host, port, code)
+        else:
+            self.connection_page.set_status(False, "Pairing cancelled")
+
+    # -- this laptop as a target ---------------------------------------------
+    def start_receiving(self, name=None, port=None) -> None:
+        """Offer this laptop as a target. Used by --receive and the UI switch."""
+        self.agent.start(name=name or self.agent_name,
+                         port=port or config.CONTROL_PORT)
+        self.stack.setCurrentIndex(PAGE_CONNECTION)
+
+    def _on_agent_toggle(self, want_running: bool) -> None:
+        if want_running:
+            self.agent.start(name=self.agent_name)
+        else:
+            self.agent.stop()
+            self.connection_page.set_agent_running(False)
+
+    def _on_agent_started(self, port: int) -> None:
+        self.connection_page.set_agent_running(True, port)
+        self.connection_page.this_laptop.refresh_addresses()
+        self.session_page.append_log(f"Now receiving on port {port}")
+
+    def _on_agent_stopped(self, reason: str) -> None:
+        self.connection_page.set_agent_running(False)
+        self.session_page.append_log(f"Stopped receiving ({reason})")
+
+    def _on_agent_failed(self, message: str) -> None:
+        self.connection_page.set_agent_running(False)
+        QMessageBox.warning(self, "Could not start receiving", message)
+
+    def _on_rotate_code(self) -> None:
+        answer = QMessageBox.question(
+            self, "New pairing code",
+            "Issue a new pairing code?\n\nLaptops paired with the old code will "
+            "have to be given the new one before they can connect again.",
+            QMessageBox.No | QMessageBox.Yes, QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            security.rotate_code()
+            self.connection_page.refresh_code()
+
+    def _on_refresh_tailscale(self) -> None:
+        self.registry.refresh_tailscale_now()
+        self.connection_page.this_laptop.refresh_addresses()
 
     def _on_connected(self, info: dict) -> None:
         name = info.get("name", self.link.peer_host)
@@ -331,6 +407,7 @@ class MainWindow(QWidget):
 
     # -- shutdown -------------------------------------------------------------
     def closeEvent(self, event) -> None:
-        self.peer_watcher.stop()
+        self.registry.stop()
+        self.agent.stop()
         self.link.disconnect_from("controller closing")
         super().closeEvent(event)

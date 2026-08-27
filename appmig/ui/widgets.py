@@ -94,11 +94,14 @@ def label(text: str, object_name: str = "", wrap: bool = False) -> QLabel:
         widget.setObjectName(object_name)
     widget.setWordWrap(wrap)
     if wrap:
-        # A word-wrapping QLabel still reports the full unwrapped text in its
-        # size hint, which would push the whole page wider than the window.
-        # Ignoring the horizontal hint lets it take the width it is given.
-        widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
-        widget.setMinimumWidth(1)
+        # A word-wrapping QLabel must be allowed to shrink horizontally without
+        # its height being computed at that minimum width -- otherwise the label
+        # reports the height of text wrapped into a one-word column and the page
+        # grows absurdly tall. Preferred + heightForWidth gives Qt the real
+        # relationship between the two.
+        policy = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        policy.setHeightForWidth(True)
+        widget.setSizePolicy(policy)
     return widget
 
 

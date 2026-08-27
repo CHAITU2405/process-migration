@@ -84,7 +84,7 @@ def show() -> Dict[str, str]:
         print(f"Best link: ethernet at {best['ethernet']}")
     else:
         print("No direct cable detected. Wi-Fi will work; a cable will be faster.")
-    print(f"\nOn the other laptop, run:  python run_agent.py")
+    print("\nOn the other laptop, run:  python main.py agent")
     print("Then enter this laptop's address on the controller's Connection page.")
     return best
 
@@ -93,7 +93,7 @@ def watch() -> None:
     """Poll while you plug the cable in, and report what appears."""
     print("Watching for a new interface. Plug the cable in now. Ctrl+C to stop.\n")
     known = {(name, address) for name, address, _ll in interfaces()}
-    for name, address, _ll in sorted(known):
+    for name, address in sorted(known):
         print(f"  already up: {name}  {address}")
     print()
     try:
@@ -101,10 +101,12 @@ def watch() -> None:
             time.sleep(1.5)
             current = {(name, address) for name, address, _ll in interfaces()}
             for entry in sorted(current - known):
-                print(f"  + APPEARED: {entry[0]}  {entry[1]}   ({classify(entry[0])})")
-                print("    The cable is up. Run this script without --watch for details.")
+                print(f"  + APPEARED: {entry[0]}  {entry[1]}   ({classify(entry[0])})",
+                      flush=True)
+                print("    The cable is up. Re-run without --watch for details.",
+                      flush=True)
             for entry in sorted(known - current):
-                print(f"  - went away: {entry[0]}  {entry[1]}")
+                print(f"  - went away: {entry[0]}  {entry[1]}", flush=True)
             known = current
     except KeyboardInterrupt:
         print("\nStopped.")
@@ -130,7 +132,7 @@ def probe(host: str) -> None:
         print(f"  agent port {config.CONTROL_PORT}: closed ({exc.__class__.__name__})")
         if reachable:
             print("\n  The laptop is reachable but the agent is not running there.")
-            print("  Start it with:  python run_agent.py")
+            print("  Start it with:  python main.py agent")
         else:
             print("\n  No network path to that address. Check the cable, and that")
             print("  both machines list an address on the same subnet.")
@@ -138,7 +140,7 @@ def probe(host: str) -> None:
         sock.close()
 
 
-def main() -> int:
+def main(argv=None) -> int:
     if sys.platform != "win32":
         print("This tool targets Windows.")
         return 1
@@ -147,7 +149,7 @@ def main() -> int:
     parser.add_argument("host", nargs="?", help="Address of the other laptop to test")
     parser.add_argument("--watch", action="store_true",
                         help="Watch for a cable being plugged in")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.watch:
         watch()

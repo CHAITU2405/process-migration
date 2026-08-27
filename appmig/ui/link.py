@@ -12,7 +12,7 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from .. import config
+from .. import config, security
 from ..protocol import channel as chan
 from ..protocol.channel import Channel, ChannelClosed
 from ..protocol.messages import Msg
@@ -27,6 +27,7 @@ class AgentLink(QObject):
     frameReceived = Signal(str, dict, bytes)
     sessionGone = Signal(str)
     errorOccurred = Signal(str)
+    pairingRequired = Signal(str, int)   # host, port
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -39,6 +40,7 @@ class AgentLink(QObject):
         self.peer_host = ""
         self.peer_port = 0
         self.last_pong = 0.0
+        self._pending_code = ""
 
     # -- state ----------------------------------------------------------------
     @property
@@ -46,14 +48,20 @@ class AgentLink(QObject):
         return self._channel is not None
 
     # -- connect / disconnect -------------------------------------------------
-    def connect_to(self, host: str, port: int = config.CONTROL_PORT) -> None:
-        """Non-blocking. Emits ``connected`` or ``errorOccurred``."""
+    def connect_to(self, host: str, port: int = config.CONTROL_PORT,
+                   code: Optional[str] = None) -> None:
+        """Non-blocking. Emits ``connected``, ``pairingRequired`` or ``errorOccurred``.
+
+        ``code`` is the target's pairing code. When omitted, a code remembered
+        from a previous successful pairing with this host is used.
+        """
         if self.is_connected:
             self.disconnect_from("switching target")
-        threading.Thread(target=self._do_connect, args=(host, port),
+        threading.Thread(target=self._do_connect, args=(host, port, code),
                          name="link-connect", daemon=True).start()
 
-    def _do_connect(self, host: str, port: int) -> None:
+    def _do_connect(self, host: str, port: int,
+                    code: Optional[str] = None) -> None:
         try:
             channel = chan.connect(host, port, config.CONNECT_TIMEOUT)
         except OSError as exc:
@@ -66,8 +74,13 @@ class AgentLink(QObject):
         self.peer_host = host
         self.peer_port = port
 
+        self._pending_code = security.normalise(code) if code else security.recall_code(host)
         try:
-            channel.send(Msg.HELLO, {"role": "controller", "version": config.VERSION})
+            channel.send(Msg.HELLO, {
+                "role": "controller",
+                "version": config.VERSION,
+                "code": self._pending_code,
+            })
         except ChannelClosed as exc:
             self.errorOccurred.emit(f"Handshake failed: {exc}")
             self._teardown("handshake failed")
@@ -107,6 +120,8 @@ class AgentLink(QObject):
 
     def _dispatch(self, mtype: int, payload: dict, blob: bytes) -> None:
         if mtype == Msg.HELLO_ACK:
+            if self._pending_code:
+                security.remember_code(self.peer_host, self._pending_code)
             self.peer_name = payload.get("name", self.peer_host)
             self.last_pong = time.monotonic()
             self.connected.emit(payload)
@@ -128,7 +143,13 @@ class AgentLink(QObject):
         elif mtype == Msg.LOG:
             self.logMessage.emit(payload.get("text", ""))
         elif mtype == Msg.ERROR:
-            self.errorOccurred.emit(payload.get("error", "unknown agent error"))
+            if payload.get("needs_code"):
+                security.forget_code(self.peer_host)
+                self.pairingRequired.emit(self.peer_host, self.peer_port)
+            else:
+                self.errorOccurred.emit(payload.get("error", "unknown agent error"))
+            if payload.get("fatal"):
+                self._teardown("not paired")
 
     def _heartbeat_loop(self) -> None:
         while not self._stop.wait(config.HEARTBEAT_INTERVAL):

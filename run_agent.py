@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 
 
-def main() -> int:
+def main(argv=None) -> int:
     if sys.platform != "win32":
         print("The agent uses Win32 APIs and only runs on Windows.")
         return 1
@@ -22,7 +22,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="AppMigrate agent")
     parser.add_argument("--port", type=int, default=config.CONTROL_PORT)
     parser.add_argument("--name", default=None, help="Name shown to controllers")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     def log(message: str) -> None:
         print(f"[{datetime.now():%H:%M:%S}] {message}", flush=True)

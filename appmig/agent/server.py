@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
-from .. import bundle, config, migrate
+from .. import bundle, config, migrate, security
 from ..adapters.registry import adapter_by_id
 from ..discovery.peers import BeaconBroadcaster
 from ..protocol.channel import Channel, ChannelClosed
@@ -108,16 +108,32 @@ class Agent:
         channel = Channel(client)
         self.log(f"Controller connected from {address[0]}")
         incoming: Optional[_Incoming] = None
+        authenticated = False
         try:
             while True:
                 mtype, payload, blob = channel.recv()
 
                 if mtype == Msg.HELLO:
+                    if not security.check(payload.get("code"), address[0]):
+                        self.log(f"Rejected {address[0]}: wrong or missing pairing code")
+                        channel.send(Msg.ERROR, {
+                            "error": "Pairing code required. Read it from the "
+                                     "AppMigrate window on the target laptop.",
+                            "fatal": True,
+                            "needs_code": True,
+                        })
+                        return
+                    authenticated = True
+                    self.log(f"Paired with {address[0]}")
                     channel.send(Msg.HELLO_ACK, {
                         "name": self.name,
                         "version": config.VERSION,
                         "input_mode": config.INPUT_MODE,
                     })
+                elif not authenticated:
+                    # Nothing else is served before the handshake succeeds.
+                    channel.send(Msg.ERROR, {"error": "Not paired.", "fatal": True})
+                    return
                 elif mtype == Msg.PING:
                     channel.send(Msg.PONG, {"t": payload.get("t")})
 
