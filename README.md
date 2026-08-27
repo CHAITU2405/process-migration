@@ -190,6 +190,47 @@ works** — both ends are hosts.
 
 ---
 
+## The target runs it headless
+
+The point of the exercise is that laptop 2 does the work while laptop 1 keeps the
+screen and the keyboard. So by default the restored application is moved off the
+target's visible desktop the moment its window appears.
+
+It keeps running and keeps rendering — `PrintWindow` captures an off-screen
+window exactly as it captures a visible one — but nobody sitting at that machine
+sees it, and nobody can click it there by accident. The target behaves like a
+worker, not like a second computer somebody has to leave alone.
+
+The toggle is on the Applications page. Turn it off if you would rather watch the
+app on both screens.
+
+If you end a session without closing the app, its window is put back on the
+target's desktop rather than stranded off-screen with no way to reach it.
+
+### Input
+
+Mouse and keyboard from the viewer are replayed onto the target window.
+
+Coordinates arriving from the controller are relative to the **captured window
+image**, whose origin is the window's top-left corner including border and title
+bar. Window messages carry **client** coordinates, whose origin is inside that
+frame. Injecting one as the other puts every click about a title-bar's height
+below where the user aimed, so the injector translates between them, and resolves
+the actual child control under the pointer — classic Win32 apps keep their edit
+boxes and canvases in child windows that must receive the message themselves.
+
+Two modes, set by `INPUT_MODE` in `config.py`:
+
+| Mode | Behaviour |
+|---|---|
+| `post` (default) | Posts window messages. Leaves the target's real cursor and focus alone, so that machine stays usable |
+| `sendinput` | Drives the target's actual input stack. Works with anything, but takes over that machine's mouse and keyboard |
+
+A few hardware-accelerated applications ignore synthetic window messages. Switch
+those to `sendinput`.
+
+---
+
 ## Does it actually save resources?
 
 Laptop 1 isn't free after the handoff — it decodes JPEG frames and runs a socket

@@ -5,9 +5,11 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QCheckBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
+    QVBoxLayout, QWidget,
 )
 
+from .. import config
 from ..adapters.registry import adapter_for
 from ..discovery.apps import AppInfo, list_running_apps
 from . import theme
@@ -110,6 +112,15 @@ class AppsPage(QWidget):
         controls.addWidget(refresh)
         outer.addLayout(controls)
 
+        self.hide_toggle = QCheckBox(
+            "Hide the app on the target laptop -- it runs there, but only "
+            "appears on this screen")
+        self.hide_toggle.setChecked(config.HIDE_ON_TARGET)
+        self.hide_toggle.setCursor(Qt.PointingHandCursor)
+        self.hide_toggle.setStyleSheet(
+            f'color: {theme.TEXT_DIM}; font-size: 12px; padding-bottom: 6px;')
+        outer.addWidget(self.hide_toggle)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -132,6 +143,10 @@ class AppsPage(QWidget):
         self._can_transfer = can_transfer
         for row in self._rows.values():
             row.set_can_transfer(can_transfer)
+
+    @property
+    def hide_on_target(self) -> bool:
+        return self.hide_toggle.isChecked()
 
     def _on_filter_changed(self, text: str) -> None:
         self._filter = text.strip().lower()

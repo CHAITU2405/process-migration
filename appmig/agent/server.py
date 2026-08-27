@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,7 @@ class Session:
     streamer: Optional[WindowStreamer] = None
     injector: Optional[InputInjector] = None
     warnings: list = field(default_factory=list)
+    parked_from: Optional[tuple] = None   # where the window was before hiding
 
 
 class _Incoming:
@@ -195,7 +197,9 @@ class Agent:
             return
 
         try:
-            session = self._restore(incoming.session_id, blob)
+            session = self._restore(incoming.session_id, blob,
+                                    hide=bool(incoming.meta.get('hide_on_target',
+                                                                config.HIDE_ON_TARGET)))
         except Exception as exc:
             self.log(f"Restore failed: {exc}")
             channel.send(Msg.RESTORE_RESULT, {
@@ -216,7 +220,7 @@ class Agent:
             "hwnd": session.hwnd, "app_name": session.app_name,
             "warnings": session.warnings})
 
-    def _restore(self, session_id: str, blob: bytes) -> Session:
+    def _restore(self, session_id: str, blob: bytes, hide: bool = True) -> Session:
         state = bundle.unpack(blob)
         adapter = adapter_by_id(state.adapter_id)
         workdir = config.SESSION_DIR / session_id
@@ -243,10 +247,21 @@ class Agent:
                 f"{config.RESTORE_WINDOW_TIMEOUT:.0f} seconds."
             )
 
-        return Session(
+        session = Session(
             session_id=session_id, app_name=state.app_name, pid=window.pid,
             hwnd=window.hwnd, workdir=workdir, warnings=list(spec.warnings),
         )
+
+        if hide:
+            # Give the app a moment to finish laying itself out before moving it,
+            # or some toolkits re-centre themselves back onto the desktop.
+            time.sleep(0.8)
+            session.parked_from = win.park_offscreen(window.hwnd)
+            self.log("Window hidden on this machine; it is visible on the controller")
+            session.warnings.append(
+                "Hidden on the target: the app runs here but only shows on your screen.")
+
+        return session
 
     # -- teardown -------------------------------------------------------------
     def _window_gone(self, channel: Channel, session_id: str) -> None:
@@ -265,6 +280,10 @@ class Agent:
             session.streamer.stop()
         if close_app and win.is_window(session.hwnd):
             win.request_close(session.hwnd)
+        elif session.parked_from is not None:
+            # Leaving the app running: put its window back on this desktop
+            # so it is not stranded off-screen with no way to reach it.
+            win.restore_position(session.hwnd, session.parked_from)
 
 
 def run(port: int = config.CONTROL_PORT, name: Optional[str] = None) -> None:

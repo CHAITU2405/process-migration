@@ -306,7 +306,11 @@ class MainWindow(QWidget):
             f"Sending {result.size_mb:.2f} MB to {self.link.peer_name}...")
         self.link.send_bundle(
             result.session_id,
-            {"app_name": result.state.app_name, "adapter": result.adapter.id},
+            {
+                "app_name": result.state.app_name,
+                "adapter": result.adapter.id,
+                "hide_on_target": self.apps_page.hide_on_target,
+            },
             result.blob,
         )
 

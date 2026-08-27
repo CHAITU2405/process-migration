@@ -45,6 +45,10 @@ for _p in (DATA_DIR, PROFILE_DIR, SESSION_DIR, ROLLBACK_DIR):
 # user's real one. Safe by default; see README for the trade-off.
 BROWSER_SANDBOX_PROFILE = True
 
+# Move the restored app off the target laptop's visible desktop. It keeps
+# running and streaming, but nobody sitting at that machine sees or touches it.
+HIDE_ON_TARGET = True
+
 # "post" injects window messages (does not steal the agent's real cursor).
 # "sendinput" drives the agent's actual input stack -- more compatible, more invasive.
 INPUT_MODE = "post"

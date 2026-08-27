@@ -154,6 +154,36 @@ def is_window(hwnd: int) -> bool:
     return bool(user32.IsWindow(hwnd))
 
 
+PARK_X, PARK_Y = -32000, -32000
+SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
+
+
+def park_offscreen(hwnd: int) -> tuple:
+    """Move a window off the visible desktop, returning where it was.
+
+    The application keeps running and keeps rendering -- PrintWindow captures an
+    off-screen window exactly as it captures a visible one -- but it no longer
+    appears on the target machine's screen and cannot be clicked there by
+    accident. This is what makes the target a headless worker rather than a
+    second machine somebody has to leave alone.
+    """
+    original = window_rect(hwnd)
+    user32.SetWindowPos(hwnd, 0, PARK_X, PARK_Y, 0, 0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+    return original
+
+
+def restore_position(hwnd: int, rect: tuple) -> None:
+    """Put a parked window back where it was."""
+    if not rect or not is_window(hwnd):
+        return
+    left, top, right, bottom = rect
+    if left <= PARK_X:
+        left, top = 80, 80        # never restore it back to nowhere
+    user32.SetWindowPos(hwnd, 0, left, top, 0, 0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+
+
 def request_close(hwnd: int) -> None:
     """Ask nicely. This is what lets the app flush its own session state."""
     user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
